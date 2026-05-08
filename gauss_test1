@@ -1,0 +1,78 @@
+#include <vector>
+#include <cstring>
+#include <string>
+#include <iostream>
+#include <fstream>
+#include <chrono>
+#include <iomanip>
+#include <sstream>
+#include <sys/time.h>
+#include <omp.h>
+#include <arm_neon.h> // ARM NEON SIMD 指令集头文件
+#include <stdlib.h>
+
+// 定义矩阵规模
+#define MATRIX_SIZE 1024
+
+alignas(32) float matrix[MATRIX_SIZE][MATRIX_SIZE];
+
+
+void initialize_matrix() {
+    for (int i = 0; i < MATRIX_SIZE; i++) {
+        for (int j = 0; j < MATRIX_SIZE; j++) {
+            matrix[i][j] = (float)rand() / RAND_MAX;
+        }
+    }
+}
+
+int main(int argc, char *argv[])
+{
+    initialize_matrix();
+
+    // 记录算法开始时间
+    auto start_time = std::chrono::high_resolution_clock::now();
+
+  
+    for (int k = 0; k < MATRIX_SIZE; k++) {
+        // 归一化当前行
+        float pivot_element = matrix[k][k];
+        for (int j = k + 1; j < MATRIX_SIZE; j++) {
+            matrix[k][j] /= pivot_element;
+        }
+        matrix[k][k] = 1.0f;
+
+        // 消元下方所有行
+        for (int i = k + 1; i < MATRIX_SIZE; i++) {
+            // 将消元因子广播到 128 位寄存器的 4 个槽位中
+            float32x4_t v_elim_factor = vdupq_n_f32(matrix[i][k]);
+            
+            int j = k + 1;
+            // 一次并行处理 4 个 float
+            for (; j <= MATRIX_SIZE - 4; j += 4) {
+                // 加载枢轴行和待消元行的连续 4 个元素
+                float32x4_t v_pivot_row = vld1q_f32(&matrix[k][j]);
+                float32x4_t v_current_row = vld1q_f32(&matrix[i][j]);
+
+                float32x4_t v_result = vmlsq_f32(v_current_row, v_elim_factor, v_pivot_row);
+
+                // 将计算结果写回内存
+                vst1q_f32(&matrix[i][j], v_result);
+            }
+            
+            // 处理不足 4 个元素的剩余部分
+            for (; j < MATRIX_SIZE; j++) {
+                matrix[i][j] -= matrix[i][k] * matrix[k][j];
+            }
+            matrix[i][k] = 0.0f;
+        }
+    }
+
+    // 记录结束时间并计算耗时
+    auto end_time = std::chrono::high_resolution_clock::now();
+    
+    std::chrono::duration<double, std::ratio<1, 1000000>> elapsed_us = end_time - start_time;
+    
+    std::cout << "average latency  : " << elapsed_us.count() << " (us) " << std::endl;
+    
+    return 0;
+}
